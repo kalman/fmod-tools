@@ -70,11 +70,15 @@ class Parameter:
             return variable_name(self.name) + "Label"
         raise TypeError()
 
-    def min_value(self) -> str:
-        return self._fmt_value(self.get_value("minimum", '0'))
+    def min_value(self, fmt_cpp=False) -> str:
+        return self._fmt_value(self.get_value("minimum", '0'), fmt_cpp=fmt_cpp)
 
-    def max_value(self) -> str:
-        return self._fmt_value(self.get_value("maximum", '1'))
+    def max_value(self, fmt_cpp=False) -> str:
+        mv = self.get_value("maximum", '1')
+        if not self.is_continuous():
+            # Discrete and labeled parameter maximum values are exclusive in the save file, make them inclusive.
+            mv = str(int(mv) - 1)
+        return self._fmt_value(mv, fmt_cpp=fmt_cpp)
 
     def initial_value(self, fmt_cpp=False) -> str:
         return self._fmt_value(self.get_value("initialValue", '0'), fmt_cpp=fmt_cpp)
@@ -129,11 +133,11 @@ class CppPrinter:
         return "\n".join(self._lines)
 
 
-def build_parameters(project_dir: Path) -> list[Parameter]:
+def build_parameters(project_path: Path) -> list[Parameter]:
     """Returns all Parameters found in the Metadata/ParameterPreset directory of an FMOD project."""
 
     def load_objects():
-        preset_dir = project_dir / "Metadata" / "ParameterPreset"
+        preset_dir = project_path.parent / "Metadata" / "ParameterPreset"
         presets = []
         properties_by_id = {}
 
@@ -262,10 +266,10 @@ def parameter_id_from_guid(guid: str) -> tuple[int, int]:
     return data1, data2
 
 
-def generate_csharp(parameters: list[Parameter], classname: str, namespace: str) -> str:
+def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: str, namespace: str) -> str:
     printer = CppPrinter()
 
-    printer.comment("Generated with %s (https://github.com/kalman/fmod-tools)" % Path(__file__).name)
+    printer.comment(f"Generated from {fmod_project.name} by {Path(__file__).name} (https://github.com/kalman/fmod-tools)")
     printer.blank_line()
     printer.line("using FMOD.Studio;")
     printer.blank_line()
@@ -292,9 +296,8 @@ def generate_csharp(parameters: list[Parameter], classname: str, namespace: str)
     for p in parameters:
         printer.line("/// <summary>")
         printer.line(f"/// \"{p.name}\" ({p.value_type()})<br/>")
-        if not p.is_labeled():
-            printer.line(f"/// Min: {p.min_value()}<br/>")
-            printer.line(f"/// Max: {p.max_value()}<br/>")
+        printer.line(f"/// Min: {p.min_value()}<br/>")
+        printer.line(f"/// Max: {p.max_value()}<br/>")
         printer.line(f"/// Initial: {p.initial_value()}")
         printer.line("/// </summary>")
         (data1, data2) = parameter_id_from_guid(p.parameter_id)
@@ -302,9 +305,12 @@ def generate_csharp(parameters: list[Parameter], classname: str, namespace: str)
             "public static readonly PARAMETER_ID %s = new() { data1 = %s, data2 = %s };" % (p.var_name(), data1, data2))
         printer.blank_line()
 
-    # Generate initial values for every parameter
+    # Generate min/max/initial values for every parameter
     for p in parameters:
+        printer.line(f"public const {p.value_type()} Min{p.var_name()}Value = {p.min_value(fmt_cpp=True)};")
+        printer.line(f"public const {p.value_type()} Max{p.var_name()}Value = {p.max_value(fmt_cpp=True)};")
         printer.line(f"public const {p.value_type()} Initial{p.var_name()}Value = {p.initial_value(fmt_cpp=True)};")
+        printer.blank_line()
 
     printer.block_end()
 
@@ -314,13 +320,12 @@ def generate_csharp(parameters: list[Parameter], classname: str, namespace: str)
     printer.blank_line()
     return str(printer)
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Generate a C# parameter list from an FMOD Studio project."
     )
     parser.add_argument(
-        "fmod_project_dir", type=Path, help="Path to the FMOD Studio project directory"
+        "fmod_project", type=Path, help="Path to the FMOD Studio project directory"
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
@@ -334,17 +339,25 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+    fmod_project: Path = args.fmod_project
 
-    if not args.fmod_project_dir.is_dir():
-        parser.error(f"Not a directory: {args.fmod_project_dir}")
+    if fmod_project.is_dir():
+        fspro_files = list(fmod_project.glob("*.fspro"))
+        if len(fspro_files) == 0:
+            print("error: directory is not an FMOD project, must contain at least one .fspro file")
+            return 1
+        fmod_project = fspro_files[0]
+    elif fmod_project.suffix != ".fspro":
+        print("error: file is not an FMOD project, must end with .fspro)")
+        return 1
 
     try:
-        parameters = build_parameters(args.fmod_project_dir)
+        parameters = build_parameters(fmod_project)
     except Exception as e:
         print(f"error: failed to parse FMOD project metadata: {e}", file=sys.stderr)
         return 1
 
-    output_text = generate_csharp(parameters, args.classname, args.namespace)
+    output_text = generate_csharp(fmod_project, parameters, args.classname, args.namespace)
 
     if args.output:
         args.output.write_text(output_text, encoding="utf-8")

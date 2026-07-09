@@ -85,7 +85,7 @@ scripts/fmod_parameter_codegen.py Path/To/FMODProject
 You'll generate this:
 
 ```csharp
-// Generated with fmod_parameter_codegen.py (https://github.com/kalman/fmod-tools)
+// Generated from KalmanFMOD.fspro by fmod_parameter_codegen.py (https://github.com/kalman/fmod-tools)
 
 using FMOD.Studio;
 
@@ -93,7 +93,7 @@ public class FmodParameters
 {
     public enum SurfaceLabel
     {
-        Grasss,
+        Grass,
         Dirt,
         Concrete,
     }
@@ -109,20 +109,30 @@ public class FmodParameters
     /// <summary>
     /// "Count" (int)<br/>
     /// Min: 0<br/>
-    /// Max: 11<br/>
+    /// Max: 10<br/>
     /// Initial: 1
     /// </summary>
     public static readonly PARAMETER_ID Count = new() { data1 = 90685309, data2 = 4195628531 };
 
     /// <summary>
     /// "Surface" (SurfaceLabel)<br/>
-    /// Initial: SurfaceLabel.Grasss
+    /// Min: SurfaceLabel.Grass<br/>
+    /// Max: SurfaceLabel.Concrete<br/>
+    /// Initial: SurfaceLabel.Grass
     /// </summary>
     public static readonly PARAMETER_ID Surface = new() { data1 = 4265537963, data2 = 2417074898 };
 
+    public const float MinPitchValue = -12f;
+    public const float MaxPitchValue = 12f;
     public const float InitialPitchValue = 0f;
+
+    public const int MinCountValue = 0;
+    public const int MaxCountValue = 10;
     public const int InitialCountValue = 1;
-    public const SurfaceLabel InitialSurfaceValue = SurfaceLabel.Grasss;
+
+    public const SurfaceLabel MinSurfaceValue = SurfaceLabel.Grass;
+    public const SurfaceLabel MaxSurfaceValue = SurfaceLabel.Concrete;
+    public const SurfaceLabel InitialSurfaceValue = SurfaceLabel.Grass;
 }
 ```
 
