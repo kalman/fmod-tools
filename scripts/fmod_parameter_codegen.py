@@ -32,7 +32,7 @@ class Parameter:
         self._properties = properties
 
     def is_read_only(self) -> bool:
-        return self.get_value("isReadOnly", 'false') == 'true'
+        return self.get_value("isReadOnly", '') == 'true'
 
     def has_value(self, key: str) -> bool:
         return key in self._properties
@@ -57,6 +57,15 @@ class Parameter:
 
     def is_user(self) -> bool:
         return self.is_continuous() or self.is_discrete() or self.is_labeled()
+
+    def is_global(self) -> bool:
+        return self.get_value("isGlobal", '') == 'true'
+
+    def has_note(self) -> bool:
+        return 'note' in self._properties
+
+    def note(self) -> str:
+        return self.get_value("note", "")
 
     def var_name(self) -> str:
         return variable_name(self.name)
@@ -136,29 +145,25 @@ class CppPrinter:
 def build_parameters(project_path: Path) -> list[Parameter]:
     """Returns all Parameters found in the Metadata/ParameterPreset directory of an FMOD project."""
 
-    def load_objects():
-        preset_dir = project_path.parent / "Metadata" / "ParameterPreset"
-        presets = []
-        properties_by_id = {}
+    preset_dir = project_path.parent / "Metadata" / "ParameterPreset"
+    presets = []
+    properties_by_id = {}
 
-        for xml_path in sorted(preset_dir.glob("*.xml")):
-            root = ElementTree.parse(xml_path).getroot()
-            for obj in root.findall("object"):
-                properties = {
-                    prop.get("name"): [v.text or "" for v in prop.findall("value")]
-                    for prop in obj.findall("property")
-                }
-                properties_by_id[obj.get("id")] = properties
+    for xml_path in sorted(preset_dir.glob("*.xml")):
+        root = ElementTree.parse(xml_path).getroot()
+        for obj in root.findall("object"):
+            properties = {
+                prop.get("name"): [v.text or "" for v in prop.findall("value")]
+                for prop in obj.findall("property")
+            }
+            properties_by_id[obj.get("id")] = properties
 
-                if obj.get("class") == "ParameterPreset":
-                    dest = obj.find("relationship[@name='parameter']/destination")
-                    if dest is not None and dest.text:
-                        presets.append((properties["name"][0], dest.text.strip()))
+            if obj.get("class") == "ParameterPreset":
+                dest = obj.find("relationship[@name='parameter']/destination")
+                if dest is not None and dest.text:
+                    presets.append((properties["name"][0], obj.get("id"), dest.text.strip()))
 
-        return presets, properties_by_id
-
-    presets, properties_by_id = load_objects()
-    return [Parameter(dest_id, name, properties_by_id[dest_id]) for name, dest_id in presets]
+    return [Parameter(dest_id, name, {**properties_by_id[preset_id], **properties_by_id[dest_id]}) for name, preset_id, dest_id in presets]
 
 
 def hashlittle2(data: bytes, initval1: int = 0, initval2: int = 0) -> tuple[int, int]:
@@ -295,10 +300,15 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
     # Generate PARAMETER_ID for every parameter
     for p in parameters:
         printer.line("/// <summary>")
-        printer.line(f"/// \"{p.name}\" ({p.value_type()})<br/>")
+        printer.line(f"/// <p>{p.name}</p>")
+        if p.has_note():
+            printer.line(f"/// <p>{p.note()}</p>")
+        if p.is_global():
+            printer.line(f"/// Scope: Global<br/>")
+        printer.line(f"/// Type: {p.value_type()}<br/>")
+        printer.line(f"/// Initial: {p.initial_value()}<br/>")
         printer.line(f"/// Min: {p.min_value()}<br/>")
         printer.line(f"/// Max: {p.max_value()}<br/>")
-        printer.line(f"/// Initial: {p.initial_value()}")
         printer.line("/// </summary>")
         (data1, data2) = parameter_id_from_guid(p.parameter_id)
         printer.line(
@@ -306,11 +316,11 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
         printer.blank_line()
 
     # Generate min/max/initial values for every parameter
-    for p in parameters:
-        printer.line(f"public const {p.value_type()} Min{p.var_name()}Value = {p.min_value(fmt_cpp=True)};")
-        printer.line(f"public const {p.value_type()} Max{p.var_name()}Value = {p.max_value(fmt_cpp=True)};")
-        printer.line(f"public const {p.value_type()} Initial{p.var_name()}Value = {p.initial_value(fmt_cpp=True)};")
-        printer.blank_line()
+    # for p in parameters:
+    #     printer.line(f"public const {p.value_type()} Min{p.var_name()}Value = {p.min_value(fmt_cpp=True)};")
+    #     printer.line(f"public const {p.value_type()} Max{p.var_name()}Value = {p.max_value(fmt_cpp=True)};")
+    #     printer.line(f"public const {p.value_type()} Initial{p.var_name()}Value = {p.initial_value(fmt_cpp=True)};")
+    #     printer.blank_line()
 
     printer.block_end()
 
@@ -329,7 +339,11 @@ def main() -> int:
     )
     parser.add_argument(
         "-o", "--output", type=Path, default=None,
-        help="Output C# file (defaults to stdout)"
+        help="Output C# file"
+    )
+    parser.add_argument(
+        "-d", "--dir", type=Path, default=None,
+        help="Output C# file is this directory + classname"
     )
     parser.add_argument(
         "-c", "--classname", type=str, default="FmodParameters", help="C# class name"
@@ -361,6 +375,12 @@ def main() -> int:
 
     if args.output:
         args.output.write_text(output_text, encoding="utf-8")
+    elif args.dir:
+        if not args.dir.is_dir:
+            print("error: output dir is not a directory")
+            return 1
+        output_path = args.dir / f"{args.classname}.cs"
+        output_path.write_text(output_text, encoding="utf-8")
     else:
         sys.stdout.write(output_text)
 
