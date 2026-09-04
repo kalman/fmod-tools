@@ -118,6 +118,9 @@ class CppPrinter:
         indent = self._indent_str()
         self._lines.append(indent + l)
 
+    def line_no_indent(self, l: str):
+        self._lines.append(l)
+
     def comma_line(self, line: str):
         indent = self._indent_str()
         self._lines.append(indent + line + ",")
@@ -271,7 +274,7 @@ def parameter_id_from_guid(guid: str) -> tuple[int, int]:
     return data1, data2
 
 
-def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: str, namespace: str) -> str:
+def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: str, namespace: str, extra: bool) -> str:
     printer = CppPrinter()
 
     printer.comment(f"Generated from {fmod_project.name} by {Path(__file__).name} (https://github.com/kalman/fmod-tools)")
@@ -315,12 +318,21 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
             "public static readonly PARAMETER_ID %s = new() { data1 = %s, data2 = %s };" % (p.var_name(), data1, data2))
         printer.blank_line()
 
-    # Generate min/max/initial values for every parameter
-    # for p in parameters:
-    #     printer.line(f"public const {p.value_type()} Min{p.var_name()}Value = {p.min_value(fmt_cpp=True)};")
-    #     printer.line(f"public const {p.value_type()} Max{p.var_name()}Value = {p.max_value(fmt_cpp=True)};")
-    #     printer.line(f"public const {p.value_type()} Initial{p.var_name()}Value = {p.initial_value(fmt_cpp=True)};")
-    #     printer.blank_line()
+    if extra:
+        for p in parameters:
+            printer.line(f"public const {p.value_type()} {p.var_name()}MinValue = {p.min_value(fmt_cpp=True)};")
+            printer.line(f"public const {p.value_type()} {p.var_name()}MaxValue = {p.max_value(fmt_cpp=True)};")
+            printer.line(f"public const {p.value_type()} {p.var_name()}InitialValue = {p.initial_value(fmt_cpp=True)};")
+            printer.blank_line()
+
+        printer.line_no_indent("#if UNITY_EDITOR");
+        printer.block_start("public static string LookupParameterName(PARAMETER_ID pid)")
+        for p in parameters:
+            (data1, data2) = parameter_id_from_guid(p.parameter_id)
+            printer.line(f'if (pid.data1 == {data1} && pid.data2 == {data2}) return "{p.name}";')
+        printer.line('return "";')
+        printer.block_end()
+        printer.line_no_indent("#endif")
 
     printer.block_end()
 
@@ -351,6 +363,9 @@ def main() -> int:
     parser.add_argument(
         "-n", "--namespace", type=str, default=None, help="Optional C# namespace"
     )
+    parser.add_argument(
+        "-x", "--extra", action="store_true", help="Generate extra code beyond just the PARAMETER_IDs"
+    )
 
     args = parser.parse_args()
     fmod_project: Path = args.fmod_project
@@ -371,7 +386,7 @@ def main() -> int:
         print(f"error: failed to parse FMOD project metadata: {e}", file=sys.stderr)
         return 1
 
-    output_text = generate_csharp(fmod_project, parameters, args.classname, args.namespace)
+    output_text = generate_csharp(fmod_project, parameters, args.classname, args.namespace, args.extra)
 
     if args.output:
         args.output.write_text(output_text, encoding="utf-8")
