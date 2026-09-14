@@ -7,6 +7,10 @@ from pathlib import Path
 import struct
 
 
+EXTENSION_FORMAT = "\"ClassToExtend.setParameterMethod$set%sFormat\""
+EXTENSION_FORMAT2 = "\"ClassToExtend.setParameterMethod$set%%sFormat\""
+
+
 def variable_name(name) -> str:
     chars = []
 
@@ -274,10 +278,16 @@ def parameter_id_from_guid(guid: str) -> tuple[int, int]:
     return data1, data2
 
 
-def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: str, namespace: str, extra: bool) -> str:
+def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: str, namespace: str, debug: bool, extensions: str) -> str:
     printer = CppPrinter()
 
-    printer.comment(f"Generated from {fmod_project.name} by {Path(__file__).name} (https://github.com/kalman/fmod-tools)")
+    def escape_argument(argument):
+        if " " in argument or "$" in argument:
+            return f"'{argument}'"
+        return argument
+
+    printer.comment(f"Generated from {fmod_project.name} by {Path(__file__).name} (https://github.com/kalman/fmod-tools) with arguments:")
+    printer.comment("    " + " ".join(escape_argument(arg) for arg in sys.argv[1:]))
     printer.blank_line()
     printer.line("using FMOD.Studio;")
     printer.blank_line()
@@ -285,23 +295,24 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
     if namespace:
         printer.block_start("namespace " + namespace)
 
-    printer.block_start("public class %s" % classname)
+    printer.block_start("public static class %s" % classname)
 
     parameters = [p for p in parameters if not p.is_read_only() and p.is_user()]
+    labeled_parameters = [p for p in parameters if p.is_labeled()]
 
     # Generate enums for labelled parameters
-    for p in parameters:
-        if not p.is_labeled():
-            continue
+    for i, p in enumerate(labeled_parameters):
+        if i > 0:
+            printer.blank_line()
 
         printer.block_start("public enum " + p.value_type())
         for label in p.get_list_value("enumerationLabels"):
             printer.comma_line(variable_name(label))
         printer.block_end()
-        printer.blank_line()
 
     # Generate PARAMETER_ID for every parameter
-    for p in parameters:
+    for i, p in enumerate(parameters):
+        printer.blank_line()
         printer.line("/// <summary>")
         printer.line(f"/// <p>{p.name}</p>")
         if p.has_note():
@@ -316,15 +327,19 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
         (data1, data2) = parameter_id_from_guid(p.parameter_id)
         printer.line(
             "public static readonly PARAMETER_ID %s = new() { data1 = %s, data2 = %s };" % (p.var_name(), data1, data2))
-        printer.blank_line()
 
-    if extra:
-        for p in parameters:
-            printer.line(f"public const {p.value_type()} {p.var_name()}MinValue = {p.min_value(fmt_cpp=True)};")
-            printer.line(f"public const {p.value_type()} {p.var_name()}MaxValue = {p.max_value(fmt_cpp=True)};")
-            printer.line(f"public const {p.value_type()} {p.var_name()}InitialValue = {p.initial_value(fmt_cpp=True)};")
+    printer.blank_line()
+
+    for i, p in enumerate(parameters):
+        if i > 0:
             printer.blank_line()
 
+        printer.line(f"public const {p.value_type()} {p.var_name()}MinValue = {p.min_value(fmt_cpp=True)};")
+        printer.line(f"public const {p.value_type()} {p.var_name()}MaxValue = {p.max_value(fmt_cpp=True)};")
+        printer.line(f"public const {p.value_type()} {p.var_name()}InitialValue = {p.initial_value(fmt_cpp=True)};")
+
+    if debug:
+        printer.blank_line()
         printer.line_no_indent("#if UNITY_EDITOR");
         printer.block_start("public static string LookupParameterName(PARAMETER_ID pid)")
         for p in parameters:
@@ -335,6 +350,35 @@ def generate_csharp(fmod_project: Path, parameters: list[Parameter], classname: 
         printer.line_no_indent("#endif")
 
     printer.block_end()
+
+    for extension in (extensions or []):
+        if not ("." in extension):
+            print("error: extension format is " + EXTENSION_FORMAT)
+            return ""
+
+        extension_class, extension_method = extension.split(".", 1)
+
+        if not ("$" in extension_method):
+            print("error: extension format is " + EXTENSION_FORMAT)
+            return ""
+
+        extension_self_method, extension_gen_method_pattern = extension_method.split("$")
+
+        printer.blank_line()
+        printer.block_start(f"public static class {extension_class}ParameterExtensions")
+
+        for i, p in enumerate(labeled_parameters):
+            if i > 0:
+                printer.blank_line()
+
+            enum_type = p.value_type()
+            extension_gen_method = extension_gen_method_pattern % p.var_name()
+            printer.block_start(f"public static {extension_class} {extension_gen_method}(this {extension_class} self, {classname}.{enum_type} value)")
+            printer.line(f"self.{extension_self_method}({classname}.{p.var_name()}, (float)value);")
+            printer.line("return self;")
+            printer.block_end()
+
+        printer.block_end()
 
     if namespace:
         printer.block_end()
@@ -347,24 +391,45 @@ def main() -> int:
         description="Generate a C# parameter list from an FMOD Studio project."
     )
     parser.add_argument(
-        "fmod_project", type=Path, help="Path to the FMOD Studio project directory"
+        "fmod_project",
+        type=Path,
+        help="Path to the FMOD Studio project directory"
     )
     parser.add_argument(
-        "-o", "--output", type=Path, default=None,
+        "-o", "--output",
+        type=Path,
+        default=None,
         help="Output C# file"
     )
     parser.add_argument(
-        "-d", "--dir", type=Path, default=None,
+        "-d", "--dir",
+        type=Path,
+        default=None,
         help="Output C# file is this directory + classname"
     )
     parser.add_argument(
-        "-c", "--classname", type=str, default="FmodParameters", help="C# class name"
+        "-c", "--classname",
+        type=str,
+        default="FmodParameters",
+        help="C# class name"
     )
     parser.add_argument(
-        "-n", "--namespace", type=str, default=None, help="Optional C# namespace"
+        "-n", "--namespace",
+        type=str,
+        default=None,
+        help="Optional C# namespace"
     )
     parser.add_argument(
-        "-x", "--extra", action="store_true", help="Generate extra code beyond just the PARAMETER_IDs"
+        "--debug",
+        action='store_true',
+        help="Generate debug methods"
+    )
+    parser.add_argument(
+        "-x", "--extension",
+        type=str,
+        action="append",
+        help=(f"Generate type-safe enum setter extension methods for classes in form {EXTENSION_FORMAT2} for example: " +
+              "'-x EventInstance.setParameterByID$set%%sParameter'")
     )
 
     args = parser.parse_args()
@@ -386,7 +451,10 @@ def main() -> int:
         print(f"error: failed to parse FMOD project metadata: {e}", file=sys.stderr)
         return 1
 
-    output_text = generate_csharp(fmod_project, parameters, args.classname, args.namespace, args.extra)
+    output_text = generate_csharp(fmod_project, parameters, args.classname, args.namespace, args.debug, args.extension)
+
+    if not output_text:
+        return 1
 
     if args.output:
         args.output.write_text(output_text, encoding="utf-8")
